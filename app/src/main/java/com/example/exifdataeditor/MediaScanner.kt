@@ -2,83 +2,134 @@ package com.example.exifdataeditor
 
 import android.content.ContentUris
 import android.content.Context
+import android.net.Uri
 import android.provider.MediaStore
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Locale
 import kotlin.math.abs
 
 class MediaScanner(private val context: Context) {
 
-    fun scanImages(threshold: MismatchThreshold = MismatchThreshold.default): List<MediaItem> {
-        val mediaList = mutableListOf<MediaItem>()
-
-        val projection = arrayOf(
-            MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DISPLAY_NAME,
-            MediaStore.Images.Media.DATE_TAKEN,
-            MediaStore.Images.Media.DATE_MODIFIED
-        )
-
-        context.contentResolver.query(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            projection,
-            null,
-            null,
-            "${MediaStore.Images.Media.DATE_ADDED} DESC"
-        )?.use { cursor ->
-            val idCol       = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-            val nameCol     = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-            val takenCol    = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
-            val modifiedCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_MODIFIED)
-
-            while (cursor.moveToNext()) {
-                val id   = cursor.getLong(idCol)
-                val name = cursor.getString(nameCol)
-
-                var dateTaken          = cursor.getLong(takenCol)
-                val dateModifiedMillis = cursor.getLong(modifiedCol) * 1000L
-
-                val contentUri = ContentUris.withAppendedId(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id
-                )
-
-                if (dateTaken <= 0) dateTaken = parseDateFromFilename(name) ?: 0L
-
-                val mismatch = dateTaken > 0 &&
-                        abs(dateTaken - dateModifiedMillis) > threshold.millis
-
-                mediaList.add(
-                    MediaItem(
-                        id           = id,
-                        name         = name,
-                        uri          = contentUri.toString(),
-                        dateTaken    = dateTaken,
-                        dateModified = dateModifiedMillis,
-                        hasMismatch  = mismatch
-                    )
-                )
-            }
+    companion object {
+        private val REALISTIC_RANGE = run {
+            val min = Calendar.getInstance().apply { set(1990, 0, 1, 0, 0, 0) }.timeInMillis
+            val max = Calendar.getInstance().apply { set(2100, 11, 31, 23, 59, 59) }.timeInMillis
+            min..max
         }
 
-        return mediaList
+        fun isRealisticDate(millis: Long): Boolean = millis > 0 && millis in REALISTIC_RANGE
     }
 
-    private fun parseDateFromFilename(name: String): Long? {
-        val patterns = listOf(
-            Regex("(\\d{8})_(\\d{6})"),
-            Regex("(\\d{14})"),
-            Regex("(\\d{8})")
+    fun scanAll(threshold: MismatchThreshold = MismatchThreshold.default): List<MediaItem> =
+        (scanImages(threshold) + scanVideos(threshold)).sortedByDescending { it.dateModified }
+
+    fun scanImages(threshold: MismatchThreshold = MismatchThreshold.default): List<MediaItem> =
+        scanStore(
+            contentUri  = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            idCol       = MediaStore.Images.Media._ID,
+            nameCol     = MediaStore.Images.Media.DISPLAY_NAME,
+            takenCol    = MediaStore.Images.Media.DATE_TAKEN,
+            modifiedCol = MediaStore.Images.Media.DATE_MODIFIED,
+            addedCol    = MediaStore.Images.Media.DATE_ADDED,
+            isVideo     = false,
+            threshold   = threshold
         )
+
+    fun scanVideos(threshold: MismatchThreshold = MismatchThreshold.default): List<MediaItem> =
+        scanStore(
+            contentUri  = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            idCol       = MediaStore.Video.Media._ID,
+            nameCol     = MediaStore.Video.Media.DISPLAY_NAME,
+            takenCol    = MediaStore.Video.Media.DATE_TAKEN,
+            modifiedCol = MediaStore.Video.Media.DATE_MODIFIED,
+            addedCol    = MediaStore.Video.Media.DATE_ADDED,
+            isVideo     = true,
+            threshold   = threshold
+        )
+
+    private fun scanStore(
+        contentUri:  Uri,
+        idCol:       String,
+        nameCol:     String,
+        takenCol:    String,
+        modifiedCol: String,
+        addedCol:    String,
+        isVideo:     Boolean,
+        threshold:   MismatchThreshold
+    ): List<MediaItem> {
+        val list       = mutableListOf<MediaItem>()
+        val projection = arrayOf(idCol, nameCol, takenCol, modifiedCol)
+
+        context.contentResolver.query(contentUri, projection, null, null, "$addedCol DESC")
+            ?.use { cursor ->
+                val iId       = cursor.getColumnIndexOrThrow(idCol)
+                val iName     = cursor.getColumnIndexOrThrow(nameCol)
+                val iTaken    = cursor.getColumnIndexOrThrow(takenCol)
+                val iModified = cursor.getColumnIndexOrThrow(modifiedCol)
+
+                while (cursor.moveToNext()) {
+                    val id            = cursor.getLong(iId)
+                    val name          = cursor.getString(iName)
+                    var dateTaken     = cursor.getLong(iTaken)
+                    val dateModMillis = cursor.getLong(iModified) * 1000L
+                    val uri           = ContentUris.withAppendedId(contentUri, id)
+
+                    if (dateTaken <= 0) dateTaken = parseDateFromFilename(name) ?: dateModMillis
+
+                    val takenIsUnrealistic = !isRealisticDate(dateTaken)
+                    val modIsUnrealistic   = !isRealisticDate(dateModMillis)
+                    val hasMismatch = when {
+                        takenIsUnrealistic || modIsUnrealistic -> true
+                        else -> abs(dateTaken - dateModMillis) > threshold.millis
+                    }
+
+                    list.add(
+                        MediaItem(
+                            id           = id,
+                            name         = name,
+                            uri          = uri.toString(),
+                            dateTaken    = dateTaken,
+                            dateModified = dateModMillis,
+                            hasMismatch  = hasMismatch,
+                            isVideo      = isVideo
+                        )
+                    )
+                }
+            }
+        return list
+    }
+    private fun parseDateFromFilename(name: String): Long? {
+        val patterns = listOf(Regex("(\\d{8})_(\\d{6})"), Regex("(\\d{14})"), Regex("(\\d{8})"))
         for (pattern in patterns) {
             val value = pattern.find(name)?.value ?: continue
-            return try {
-                when (value.length) {
-                    15   -> SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).parse(value)?.time
-                    14   -> SimpleDateFormat("yyyyMMddHHmmss",  Locale.getDefault()).parse(value)?.time
-                    8    -> SimpleDateFormat("yyyyMMdd",        Locale.getDefault()).parse(value)?.time
+            val parsed = try {
+                val sdf = when (value.length) {
+                    15   -> SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+                    14   -> SimpleDateFormat("yyyyMMddHHmmss",  Locale.getDefault())
+                    8    -> SimpleDateFormat("yyyyMMdd",        Locale.getDefault())
                     else -> null
-                }
+                } ?: continue
+                sdf.isLenient = false  // reject impossible dates like month 13, day 99, hour 25, etc.
+                sdf.parse(value)?.time
             } catch (e: Exception) { null }
+
+            if (parsed != null) {
+                val cal  = Calendar.getInstance().apply { timeInMillis = parsed }
+                val year = cal.get(Calendar.YEAR)
+                val mon  = cal.get(Calendar.MONTH) + 1   // 1–12
+                val day  = cal.get(Calendar.DAY_OF_MONTH) // 1–31
+                val hour = cal.get(Calendar.HOUR_OF_DAY)  // 0–23
+                val min  = cal.get(Calendar.MINUTE)        // 0–59
+
+                val isValid = year in 1990..2100
+                        && mon  in 1..12
+                        && day  in 1..31
+                        && hour in 0..23
+                        && min  in 0..59
+
+                if (isValid) return parsed
+            }
         }
         return null
     }

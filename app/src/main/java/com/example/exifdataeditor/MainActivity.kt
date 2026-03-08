@@ -14,6 +14,7 @@ class MainActivity : ComponentActivity() {
     private val permissionsToRequest: Array<String> = buildList {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             add(Manifest.permission.READ_MEDIA_IMAGES)
+            add(Manifest.permission.READ_MEDIA_VIDEO)
         } else {
             add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }

@@ -6,5 +6,6 @@ data class MediaItem(
     val uri:          String,
     val dateTaken:    Long?,
     val dateModified: Long,
-    val hasMismatch:  Boolean
+    val hasMismatch:  Boolean,
+    val isVideo:      Boolean = false
 )

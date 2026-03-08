@@ -2,6 +2,8 @@
 
 package com.example.exifdataeditor
 
+import coil.decode.VideoFrameDecoder
+import coil.request.ImageRequest
 import android.app.Activity
 import android.content.Context
 import android.net.Uri
@@ -57,6 +59,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import coil.request.videoFrameMillis
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -82,6 +85,7 @@ private val SelectBg   = Color(0xFF1A2540)
 
 private enum class Filter(val label: String) { ALL("All"), MISMATCH("Issues"), OK("Clean") }
 private enum class GridMode(val columns: Int) { ONE(1), TWO(2), THREE(3) }
+private enum class MediaType(val label: String) { ALL("All"), PHOTOS("Photos"), VIDEOS("Videos") }
 private data class PendingFix(val items: List<MediaItem>, val exifDate: Long?)
 
 @Composable
@@ -98,6 +102,7 @@ fun ImageListScreen(context: Context = LocalContext.current) {
     var selectedUris       by remember { mutableStateOf<Set<String>>(emptySet()) }
     val isSelectMode       = selectedUris.isNotEmpty()
 
+    var mediaType          by remember { mutableStateOf(MediaType.ALL) }
     var pendingFix         by remember { mutableStateOf<PendingFix?>(null) }
     var showDatePicker     by remember { mutableStateOf(false) }
     var pickerItems        by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
@@ -154,7 +159,7 @@ fun ImageListScreen(context: Context = LocalContext.current) {
                     count
                 }
                 isScanning      = true
-                images          = withContext(Dispatchers.IO) { MediaScanner(context).scanImages(threshold) }
+                images          = withContext(Dispatchers.IO) { MediaScanner(context).scanAll(threshold) }
                 isScanning      = false
                 selectedUris    = emptySet()
                 progressText    = null
@@ -163,7 +168,7 @@ fun ImageListScreen(context: Context = LocalContext.current) {
                 progressTotal   = 0
                 isFixing        = false
                 fixResultMsg    = if (fixed > 0)
-                    "Updated $fixed photo${if (fixed != 1) "s" else ""}"
+                    "Updated $fixed File${if (fixed != 1) "s" else ""}"
                 else
                     "Could not update — check permissions and try again"
             }
@@ -176,11 +181,12 @@ fun ImageListScreen(context: Context = LocalContext.current) {
 
     LaunchedEffect(threshold) {
         isScanning     = true
-        images         = withContext(Dispatchers.IO) { MediaScanner(context).scanImages(threshold) }
+        images         = withContext(Dispatchers.IO) { MediaScanner(context).scanAll(threshold) }
         isScanning     = false
         expandedUri    = null
         selectedFilter = Filter.ALL
         selectedUris   = emptySet()
+        mediaType      = MediaType.ALL
     }
 
     LaunchedEffect(fixResultMsg) {
@@ -242,7 +248,7 @@ fun ImageListScreen(context: Context = LocalContext.current) {
                     isScanning = true
                     images = withContext(Dispatchers.IO) {
                         Thread.sleep(500)
-                        MediaScanner(context).scanImages(threshold)
+                        MediaScanner(context).scanAll(threshold)
                     }
                     isScanning = false
                 }
@@ -255,7 +261,7 @@ fun ImageListScreen(context: Context = LocalContext.current) {
                     Thread.sleep(500)
                 }
                 isScanning      = true
-                images          = withContext(Dispatchers.IO) { MediaScanner(context).scanImages(threshold) }
+                images          = withContext(Dispatchers.IO) { MediaScanner(context).scanAll(threshold) }
                 isScanning      = false
                 selectedUris    = emptySet()
                 progressText    = null
@@ -273,14 +279,21 @@ fun ImageListScreen(context: Context = LocalContext.current) {
         pendingFix = PendingFix(items, if (items.size == 1) items.first().dateTaken else null)
     }
 
-    val filtered = remember(images, selectedFilter) {
-        when (selectedFilter) {
-            Filter.ALL      -> images
-            Filter.MISMATCH -> images.filter { it.hasMismatch }
-            Filter.OK       -> images.filter { !it.hasMismatch }
+    val typeFiltered = remember(images, mediaType) {
+        when (mediaType) {
+            MediaType.ALL    -> images
+            MediaType.PHOTOS -> images.filter { !it.isVideo }
+            MediaType.VIDEOS -> images.filter { it.isVideo }
         }
     }
-    val mismatchImages = remember(images) { images.filter { it.hasMismatch } }
+    val filtered = remember(typeFiltered, selectedFilter) {
+        when (selectedFilter) {
+            Filter.ALL      -> typeFiltered
+            Filter.MISMATCH -> typeFiltered.filter { it.hasMismatch }
+            Filter.OK       -> typeFiltered.filter { !it.hasMismatch }
+        }
+    }
+    val mismatchImages = remember(typeFiltered) { typeFiltered.filter { it.hasMismatch } }
 
     pendingFix?.let { fix ->
         DateActionDialog(
@@ -362,6 +375,16 @@ fun ImageListScreen(context: Context = LocalContext.current) {
                 onOpenThreshold = { showThresholdSheet = true }
             )
 
+            MediaTypeRow(
+                selected = mediaType,
+                onSelect = { mediaType = it; selectedUris = emptySet() },
+                counts   = mapOf(
+                    MediaType.ALL    to images.size,
+                    MediaType.PHOTOS to images.count { !it.isVideo },
+                    MediaType.VIDEOS to images.count { it.isVideo }
+                )
+            )
+
             AnimatedVisibility(visible = isSelectMode, enter = expandVertically(), exit = shrinkVertically()) {
                 SelectionBar(
                     selectedCount = selectedUris.size,
@@ -381,9 +404,9 @@ fun ImageListScreen(context: Context = LocalContext.current) {
                 selected = selectedFilter,
                 onSelect = { selectedFilter = it; selectedUris = emptySet() },
                 counts   = mapOf(
-                    Filter.ALL      to images.size,
+                    Filter.ALL      to typeFiltered.size,
                     Filter.MISMATCH to mismatchImages.size,
-                    Filter.OK       to images.count { !it.hasMismatch }
+                    Filter.OK       to typeFiltered.count { !it.hasMismatch }
                 )
             )
 
@@ -405,7 +428,7 @@ fun ImageListScreen(context: Context = LocalContext.current) {
             }
 
             if (filtered.isEmpty() && !isScanning) {
-                EmptyState(modifier = Modifier.weight(1f), filter = selectedFilter)
+                EmptyState(modifier = Modifier.weight(1f), filter = selectedFilter, mediaType = mediaType)
             } else {
                 LazyVerticalGrid(
                     columns               = GridCells.Fixed(gridMode.columns),
@@ -462,6 +485,51 @@ fun ImageListScreen(context: Context = LocalContext.current) {
 }
 
 @Composable
+private fun MediaTypeRow(selected: MediaType, onSelect: (MediaType) -> Unit, counts: Map<MediaType, Int>) {
+    Surface(color = Surface1) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            MediaType.entries.forEach { type ->
+                val active = type == selected
+                val count  = counts[type] ?: 0
+                Surface(
+                    shape    = RoundedCornerShape(8.dp),
+                    color    = if (active) Primary.copy(alpha = 0.15f) else Surface2,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onSelect(type) }
+                ) {
+                    Column(
+                        modifier              = Modifier.padding(vertical = 8.dp),
+                        horizontalAlignment   = Alignment.CenterHorizontally,
+                        verticalArrangement   = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text       = type.label,
+                            color      = if (active) Primary else OnSurface2,
+                            fontSize   = 13.sp,
+                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal
+                        )
+                        Text(
+                            text     = count.toString(),
+                            color    = if (active) Primary.copy(alpha = 0.8f) else OnSurface2.copy(alpha = 0.6f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+        }
+    }
+    HorizontalDivider(color = Divider, thickness = 1.dp)
+}
+
+
+@Composable
 private fun AppBar(
     imageCount:      Int,
     mismatchCount:   Int,
@@ -485,7 +553,7 @@ private fun AppBar(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment     = Alignment.CenterVertically
                         ) {
-                            Text("$imageCount photos", color = OnSurface2, fontSize = 13.sp)
+                            Text("$imageCount items", color = OnSurface2, fontSize = 13.sp)
                             if (mismatchCount > 0) {
                                 Text("·", color = OnSurface2, fontSize = 13.sp)
                                 Text(
@@ -498,11 +566,11 @@ private fun AppBar(
                         }
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     GridToggle(current = gridMode, onSelect = onGridMode)
                     IconButton(
                         onClick  = onOpenThreshold,
-                        modifier = Modifier.size(20.dp).background(Surface1, RoundedCornerShape(10.dp))
+                        modifier = Modifier.size(36.dp).background(Surface1, RoundedCornerShape(10.dp))
                     ) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = OnSurface2, modifier = Modifier.size(18.dp))
                     }
@@ -693,8 +761,20 @@ private fun PhotoCard(
     ) {
         Column {
             Box(modifier = Modifier.fillMaxWidth().height(thumbHeight)) {
+                val imageRequest = if (image.isVideo) {
+                    ImageRequest.Builder(LocalContext.current)
+                        .data(Uri.parse(image.uri))
+                        .decoderFactory(VideoFrameDecoder.Factory())
+                        .videoFrameMillis(1000L) // grab frame at 1 second
+                        .build()
+                } else {
+                    ImageRequest.Builder(LocalContext.current)
+                        .data(Uri.parse(image.uri))
+                        .build()
+                }
+
                 AsyncImage(
-                    model              = Uri.parse(image.uri),
+                    model              = imageRequest,
                     contentDescription = image.name,
                     modifier           = Modifier.fillMaxSize().clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
                     contentScale       = ContentScale.Crop
@@ -715,15 +795,31 @@ private fun PhotoCard(
                     }
                 }
 
-                if (image.hasMismatch && !selected) {
-                    Surface(modifier = Modifier.align(Alignment.TopEnd).padding(8.dp), shape = RoundedCornerShape(6.dp), color = Danger) {
-                        Text(
-                            text       = if (compact) "!" else "Date mismatch",
-                            color      = Color.White,
-                            fontSize   = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier   = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
+                Row(
+                    modifier              = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (image.isVideo) {
+                        Surface(shape = RoundedCornerShape(6.dp), color = Color.Black.copy(alpha = 0.65f)) {
+                            Text(
+                                text     = "▶ Video",
+                                color    = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                    if (image.hasMismatch && !selected) {
+                        Surface(shape = RoundedCornerShape(6.dp), color = Danger) {
+                            Text(
+                                text       = if (compact) "!" else "Date mismatch",
+                                color      = Color.White,
+                                fontSize   = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier   = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                 }
 
@@ -810,7 +906,7 @@ private fun MismatchBanner(compact: Boolean, threshold: MismatchThreshold) {
             Icon(Icons.Filled.Warning, contentDescription = null, tint = Danger, modifier = Modifier.size(14.dp).padding(top = 1.dp))
             Text(
                 text       = if (compact) "Date mismatch detected"
-                else "Timestamps differ by more than ${threshold.label}. The file may have been copied or edited.",
+                else "Timestamps differ by more than ${threshold.label}. The file may have been copied or edited, or the parsed date is unrealistic.",
                 color      = Danger,
                 fontSize   = 12.sp,
                 lineHeight = 17.sp
@@ -820,15 +916,20 @@ private fun MismatchBanner(compact: Boolean, threshold: MismatchThreshold) {
 }
 
 @Composable
-private fun EmptyState(modifier: Modifier = Modifier, filter: Filter) {
+private fun EmptyState(modifier: Modifier = Modifier, filter: Filter, mediaType: MediaType) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(if (filter == Filter.MISMATCH) "✓" else "📷", fontSize = 40.sp)
             Text(
-                text       = when (filter) {
-                    Filter.MISMATCH -> "No date issues found"
-                    Filter.OK       -> "No clean photos in this view"
-                    Filter.ALL      -> "No photos found"
+                text     = when { filter == Filter.MISMATCH -> "✓"; mediaType == MediaType.VIDEOS -> "🎬"; else -> "📷" },
+                fontSize = 40.sp
+            )
+            Text(
+                text       = when {
+                    filter == Filter.MISMATCH                    -> "No date issues found"
+                    filter == Filter.OK                          -> "No clean items in this view"
+                    mediaType == MediaType.VIDEOS                -> "No videos found"
+                    mediaType == MediaType.PHOTOS                -> "No photos found"
+                    else                                         -> "No media found"
                 },
                 color      = OnSurface,
                 fontSize   = 16.sp,
@@ -836,7 +937,7 @@ private fun EmptyState(modifier: Modifier = Modifier, filter: Filter) {
             )
             Text(
                 text    = when (filter) {
-                    Filter.MISMATCH -> "All your photos have consistent dates"
+                    Filter.MISMATCH -> "All your media has consistent dates"
                     else            -> "Try a different filter"
                 },
                 color   = OnSurface2,
@@ -860,8 +961,8 @@ private fun DateActionDialog(
                 Text("Set date", color = OnSurface, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text       = if (isSingleItem) "How would you like to update this photo's modified date?"
-                    else "How would you like to update the modified dates for these photos?",
+                    text       = if (isSingleItem) "How would you like to update this File's modified date?"
+                    else "How would you like to update the modified dates for these Files?",
                     color      = OnSurface2,
                     fontSize   = 13.sp,
                     lineHeight = 19.sp
@@ -873,6 +974,7 @@ private fun DateActionDialog(
                     color    = Primary,
                     onClick  = onUseExif
                 )
+                Spacer(Modifier.height(10.dp))
                 Spacer(Modifier.height(10.dp))
                 ActionOption(title = "Pick a custom date", subtitle = "Choose any date and time", color = Warn, onClick = onPickCustom)
                 Spacer(Modifier.height(16.dp))
@@ -914,12 +1016,19 @@ private fun DateTimePickerDialog(
     onConfirm:     (Long) -> Unit,
     onDismiss:     () -> Unit
 ) {
-    val initCal = remember {
-        Calendar.getInstance().apply {
-            if (initialMillis != null && initialMillis > 0) timeInMillis = initialMillis
-        }
+    val safeMillis = remember(initialMillis) {
+        val minMillis = Calendar.getInstance().apply { set(1900, 0, 1) }.timeInMillis
+        val maxMillis = Calendar.getInstance().apply { set(2100, 11, 31) }.timeInMillis
+        if (initialMillis != null && initialMillis > 0 && initialMillis in minMillis..maxMillis)
+            initialMillis
+        else
+            System.currentTimeMillis()
     }
-    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = initCal.timeInMillis)
+
+    val initCal = remember {
+        Calendar.getInstance().apply { timeInMillis = safeMillis }
+    }
+    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = safeMillis)
     val timePickerState = rememberTimePickerState(
         initialHour   = initCal.get(Calendar.HOUR_OF_DAY),
         initialMinute = initCal.get(Calendar.MINUTE),
@@ -1024,7 +1133,7 @@ private fun ThresholdSheet(current: MismatchThreshold, onSelect: (MismatchThresh
                 Spacer(Modifier.height(20.dp))
                 Text("Sensitivity", color = OnSurface, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
-                Text("Flag photos where EXIF date and file date differ by more than:", color = OnSurface2, fontSize = 13.sp, lineHeight = 19.sp)
+                Text("Flag Files where EXIF date and file date differ by more than:", color = OnSurface2, fontSize = 13.sp, lineHeight = 19.sp)
                 Spacer(Modifier.height(16.dp))
                 MismatchThreshold.all.forEach { option ->
                     ThresholdRow(option = option, selected = option::class == current::class, onSelect = { onSelect(option) })
@@ -1063,8 +1172,8 @@ private fun ThresholdRow(option: MismatchThreshold, selected: Boolean, onSelect:
 private fun buildResultMessage(result: DateFixer.BatchResult): String = when {
     result.fixed == 0 && result.needsGrant.isEmpty() -> "Dates are already up to date"
     result.needsGrant.isNotEmpty()                   -> "Updated ${result.fixed}, permission needed for ${result.needsGrant.size} more"
-    result.fixed == result.total                     -> "Updated ${result.fixed} photo${if (result.fixed != 1) "s" else ""}"
-    else                                             -> "Updated ${result.fixed} of ${result.total} photos"
+    result.fixed == result.total                     -> "Updated ${result.fixed} File${if (result.fixed != 1) "s" else ""}"
+    else                                             -> "Updated ${result.fixed} of ${result.total} Files"
 }
 
 fun formatDate(timestamp: Long?): String {
