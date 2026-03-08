@@ -22,6 +22,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -37,6 +39,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.DateRange
@@ -56,8 +59,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.MediaItem as ExoMediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.videoFrameMillis
 import kotlinx.coroutines.Dispatchers
@@ -107,6 +114,7 @@ fun ImageListScreen(context: Context = LocalContext.current) {
     var showDatePicker     by remember { mutableStateOf(false) }
     var pickerItems        by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var pickerPresetMillis by remember { mutableStateOf<Long?>(null) }
+    var previewItem        by remember { mutableStateOf<MediaItem?>(null) }
 
     var isScanning        by remember { mutableStateOf(false) }
     var isFixing          by remember { mutableStateOf(false) }
@@ -329,6 +337,10 @@ fun ImageListScreen(context: Context = LocalContext.current) {
         )
     }
 
+    previewItem?.let { item ->
+        MediaPreviewDialog(item = item, onDismiss = { previewItem = null })
+    }
+
     Scaffold(
         containerColor = Bg,
         snackbarHost   = { SnackbarHost(hostState = snackbarState) },
@@ -444,20 +456,20 @@ fun ImageListScreen(context: Context = LocalContext.current) {
                                     slideInVertically(tween(250, delayMillis = (index * 30).coerceAtMost(300))) { it / 6 }
                         ) {
                             PhotoCard(
-                                image       = image,
-                                expanded    = expandedUri == image.uri,
-                                compact     = gridMode.columns > 1,
-                                threshold   = threshold,
-                                selected    = image.uri in selectedUris,
-                                selectMode  = isSelectMode,
-                                onToggle    = {
+                                image      = image,
+                                expanded   = expandedUri == image.uri,
+                                compact    = gridMode.columns > 1,
+                                threshold  = threshold,
+                                selected   = image.uri in selectedUris,
+                                selectMode = isSelectMode,
+                                onToggle   = {
                                     if (isSelectMode) {
                                         selectedUris = if (image.uri in selectedUris)
                                             selectedUris - image.uri
                                         else
                                             selectedUris + image.uri
                                     } else {
-                                        expandedUri = if (expandedUri == image.uri) null else image.uri
+                                        previewItem = image
                                     }
                                 },
                                 onLongPress = {
@@ -484,256 +496,198 @@ fun ImageListScreen(context: Context = LocalContext.current) {
     }
 }
 
+// ─── Media Preview Dialog ─────────────────────────────────────────────────────
+
 @Composable
-private fun MediaTypeRow(selected: MediaType, onSelect: (MediaType) -> Unit, counts: Map<MediaType, Int>) {
-    Surface(color = Surface1) {
-        Row(
+private fun MediaPreviewDialog(item: MediaItem, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties       = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    ) {
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                .wrapContentHeight()
         ) {
-            MediaType.entries.forEach { type ->
-                val active = type == selected
-                val count  = counts[type] ?: 0
-                Surface(
-                    shape    = RoundedCornerShape(8.dp),
-                    color    = if (active) Primary.copy(alpha = 0.15f) else Surface2,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { onSelect(type) }
-                ) {
-                    Column(
-                        modifier              = Modifier.padding(vertical = 8.dp),
-                        horizontalAlignment   = Alignment.CenterHorizontally,
-                        verticalArrangement   = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Text(
-                            text       = type.label,
-                            color      = if (active) Primary else OnSurface2,
-                            fontSize   = 13.sp,
-                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal
-                        )
-                        Text(
-                            text     = count.toString(),
-                            color    = if (active) Primary.copy(alpha = 0.8f) else OnSurface2.copy(alpha = 0.6f),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-            }
-        }
-    }
-    HorizontalDivider(color = Divider, thickness = 1.dp)
-}
-
-
-@Composable
-private fun AppBar(
-    imageCount:      Int,
-    mismatchCount:   Int,
-    gridMode:        GridMode,
-    onGridMode:      (GridMode) -> Unit,
-    threshold:       MismatchThreshold,
-    onOpenThreshold: () -> Unit
-) {
-    Surface(color = Surface1, tonalElevation = 0.dp) {
-        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape    = RoundedCornerShape(20.dp),
+                color    = Color(0xFF0A0C10)
             ) {
                 Column {
-                    Text("EXIF Inspector", color = OnSurface, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    if (imageCount > 0) {
-                        Spacer(Modifier.height(2.dp))
+                    if (item.isVideo) {
+                        VideoPlayer(uri = Uri.parse(item.uri))
+                    } else {
+                        ImageViewer(uri = Uri.parse(item.uri))
+                    }
+
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment     = Alignment.CenterVertically
+                            modifier              = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment     = Alignment.Top
                         ) {
-                            Text("$imageCount items", color = OnSurface2, fontSize = 13.sp)
-                            if (mismatchCount > 0) {
-                                Text("·", color = OnSurface2, fontSize = 13.sp)
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(
-                                    "$mismatchCount need attention",
-                                    color      = Danger,
-                                    fontSize   = 13.sp,
-                                    fontWeight = FontWeight.Medium
+                                    text       = item.name,
+                                    color      = OnSurface,
+                                    fontSize   = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines   = 2,
+                                    overflow   = TextOverflow.Ellipsis
                                 )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment     = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = if (item.isVideo) Primary.copy(alpha = 0.15f) else Surface2
+                                    ) {
+                                        Text(
+                                            text     = if (item.isVideo) "Video" else "Photo",
+                                            color    = if (item.isVideo) Primary else OnSurface2,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                    if (item.hasMismatch) {
+                                        Surface(shape = RoundedCornerShape(4.dp), color = Danger.copy(alpha = 0.15f)) {
+                                            Text(
+                                                text     = "Date issue",
+                                                color    = Danger,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            IconButton(
+                                onClick  = onDismiss,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .background(Surface2, CircleShape)
+                            ) {
+                                Icon(Icons.Filled.Close, contentDescription = "Close", tint = OnSurface2, modifier = Modifier.size(16.dp))
                             }
                         }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    GridToggle(current = gridMode, onSelect = onGridMode)
-                    IconButton(
-                        onClick  = onOpenThreshold,
-                        modifier = Modifier.size(36.dp).background(Surface1, RoundedCornerShape(10.dp))
-                    ) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = OnSurface2, modifier = Modifier.size(18.dp))
-                    }
-                }
-            }
-        }
-    }
-    HorizontalDivider(color = Divider, thickness = 1.dp)
-}
 
-@Composable
-private fun GridToggle(current: GridMode, onSelect: (GridMode) -> Unit) {
-    Surface(shape = RoundedCornerShape(10.dp), color = Surface2) {
-        Row(modifier = Modifier.padding(3.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            listOf(GridMode.ONE to "▬", GridMode.TWO to "⊞", GridMode.THREE to "⊟").forEach { (mode, icon) ->
-                val active = mode == current
-                Box(
-                    modifier = Modifier
-                        .background(if (active) Primary.copy(alpha = 0.15f) else Color.Transparent, RoundedCornerShape(7.dp))
-                        .clickable { onSelect(mode) }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text       = icon,
-                        fontSize   = 14.sp,
-                        color      = if (active) Primary else OnSurface2,
-                        fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
-                    )
-                }
-            }
-        }
-    }
-}
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider(color = Divider.copy(alpha = 0.6f))
+                        Spacer(Modifier.height(12.dp))
 
-@Composable
-private fun SelectionBar(
-    selectedCount: Int,
-    totalCount:    Int,
-    onClear:       () -> Unit,
-    onSelectAll:   () -> Unit,
-    onAction:      () -> Unit
-) {
-    val allSelected = selectedCount == totalCount
-    Surface(color = PrimaryDim) {
-        Row(
-            modifier              = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment     = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                IconButton(onClick = onClear, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Filled.Close, contentDescription = "Clear", tint = OnSurface, modifier = Modifier.size(18.dp))
-                }
-                Text("$selectedCount selected", color = OnSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                TextButton(onClick = onSelectAll, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                    Text(
-                        text       = if (allSelected) "Deselect all" else "Select all",
-                        color      = Primary,
-                        fontSize   = 13.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-            Button(
-                onClick        = onAction,
-                colors         = ButtonDefaults.buttonColors(containerColor = Primary, contentColor = Color.White),
-                shape          = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-            ) {
-                Text("Change Date", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            }
-        }
-    }
-}
-
-@Composable
-private fun FilterTabs(selected: Filter, onSelect: (Filter) -> Unit, counts: Map<Filter, Int>) {
-    Surface(color = Surface1) {
-        Row(
-            modifier              = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Filter.entries.forEach { filter ->
-                val active = filter == selected
-                val count  = counts[filter] ?: 0
-                val bgColor = when {
-                    active && filter == Filter.MISMATCH -> Danger.copy(alpha = 0.15f)
-                    active                              -> Primary.copy(alpha = 0.12f)
-                    else                                -> Surface2
-                }
-                val textColor = when {
-                    active && filter == Filter.MISMATCH -> Danger
-                    active                              -> Primary
-                    else                                -> OnSurface2
-                }
-                Surface(shape = RoundedCornerShape(20.dp), color = bgColor, modifier = Modifier.clickable { onSelect(filter) }) {
-                    Row(
-                        modifier              = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment     = Alignment.CenterVertically
-                    ) {
-                        Text(filter.label, color = textColor, fontSize = 13.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
-                        if (count > 0) {
-                            Surface(shape = CircleShape, color = textColor.copy(alpha = 0.15f)) {
-                                Text(
-                                    text       = count.toString(),
-                                    color      = textColor,
-                                    fontSize   = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier   = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
+                        Row(
+                            modifier              = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            PreviewMetaItem(
+                                label = "Date taken",
+                                value = formatDate(item.dateTaken),
+                                color = Primary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            PreviewMetaItem(
+                                label = "Modified",
+                                value = formatDate(item.dateModified),
+                                color = if (item.hasMismatch) Danger else OnSurface2,
+                                modifier = Modifier.weight(1f)
+                            )
                         }
                     }
                 }
             }
         }
     }
-    HorizontalDivider(color = Divider, thickness = 1.dp)
 }
 
 @Composable
-private fun ProgressBanner(text: String?, value: Float?, current: Int, total: Int) {
-    Surface(color = SuccessDim) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(text ?: "Working…", color = Success, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                if (total > 0 && current > 0) {
-                    Text("$current / $total", color = Success.copy(alpha = 0.7f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            if (value != null) {
-                LinearProgressIndicator(
-                    progress   = value,
-                    modifier   = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)),
-                    color      = Success,
-                    trackColor = Success.copy(alpha = 0.2f)
-                )
-            } else {
-                LinearProgressIndicator(
-                    modifier   = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)),
-                    color      = Success,
-                    trackColor = Success.copy(alpha = 0.2f)
-                )
-            }
-        }
+private fun PreviewMetaItem(label: String, value: String, color: Color, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(label, color = OnSurface2, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        Text(value, color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
+
+@Composable
+private fun ImageViewer(uri: Uri) {
+    Box(
+        modifier         = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 220.dp, max = 480.dp)
+            .background(Color.Black)
+            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        AsyncImage(
+            model              = ImageRequest.Builder(LocalContext.current)
+                .data(uri)
+                .crossfade(true)
+                .build(),
+            contentDescription = null,
+            modifier           = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 220.dp, max = 480.dp)
+                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)),
+            contentScale       = ContentScale.Fit
+        )
+    }
+}
+
+@Composable
+private fun VideoPlayer(uri: Uri) {
+    val context = LocalContext.current
+    val player  = remember {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(ExoMediaItem.fromUri(uri))
+            prepare()
+            playWhenReady = true
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { player.release() }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .wrapContentHeight()
+            .background(Color.Black)
+            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+    ) {
+        AndroidView(
+            factory  = { ctx ->
+                PlayerView(ctx).apply {
+                    this.player        = player
+                    useController      = true
+                    resizeMode         = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    setBackgroundColor(android.graphics.Color.BLACK)
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)   // initial safe ratio; ExoPlayer corrects it once metadata loads
+        )
+    }
+}
+// ─── PhotoCard ────────────────────────────────────────────────────────────────
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun PhotoCard(
-    image:      MediaItem,
-    expanded:   Boolean,
-    compact:    Boolean,
-    threshold:  MismatchThreshold,
-    selected:   Boolean,
-    selectMode: Boolean,
-    onToggle:   () -> Unit,
+    image:       MediaItem,
+    expanded:    Boolean,
+    compact:     Boolean,
+    threshold:   MismatchThreshold,
+    selected:    Boolean,
+    selectMode:  Boolean,
+    onToggle:    () -> Unit,
     onLongPress: () -> Unit,
-    onFix:      () -> Unit
+    onFix:       () -> Unit
 ) {
     val borderColor by animateColorAsState(
         targetValue   = when {
@@ -765,7 +719,7 @@ private fun PhotoCard(
                     ImageRequest.Builder(LocalContext.current)
                         .data(Uri.parse(image.uri))
                         .decoderFactory(VideoFrameDecoder.Factory())
-                        .videoFrameMillis(1000L) // grab frame at 1 second
+                        .videoFrameMillis(1000L)
                         .build()
                 } else {
                     ImageRequest.Builder(LocalContext.current)
@@ -779,6 +733,7 @@ private fun PhotoCard(
                     modifier           = Modifier.fillMaxSize().clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
                     contentScale       = ContentScale.Crop
                 )
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -787,6 +742,25 @@ private fun PhotoCard(
                             RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
                         )
                 )
+
+                // Video-only play overlay — images get no icon
+                if (image.isVideo && !selected) {
+                    Box(
+                        modifier         = Modifier
+                            .align(Alignment.Center)
+                            .size(44.dp)
+                            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.25f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector        = Icons.Filled.PlayArrow,
+                            contentDescription = "Play",
+                            tint               = Color.White,
+                            modifier           = Modifier.size(26.dp)
+                        )
+                    }
+                }
 
                 if (selected) {
                     Box(modifier = Modifier.fillMaxSize().background(Primary.copy(alpha = 0.3f), RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)))
@@ -802,11 +776,11 @@ private fun PhotoCard(
                     if (image.isVideo) {
                         Surface(shape = RoundedCornerShape(6.dp), color = Color.Black.copy(alpha = 0.65f)) {
                             Text(
-                                text     = "▶ Video",
-                                color    = Color.White,
-                                fontSize = 11.sp,
+                                text       = "▶ Video",
+                                color      = Color.White,
+                                fontSize   = 11.sp,
                                 fontWeight = FontWeight.Medium,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                modifier   = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
                     }
@@ -835,12 +809,12 @@ private fun PhotoCard(
             }
 
             Column(
-                modifier = Modifier.padding(horizontal = if (compact) 10.dp else 14.dp, vertical = if (compact) 10.dp else 12.dp),
+                modifier            = Modifier.padding(horizontal = if (compact) 10.dp else 14.dp, vertical = if (compact) 10.dp else 12.dp),
                 verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp)
             ) {
                 if (!compact || expanded) {
-                    MetaRow(icon = Icons.Outlined.DateRange, label = "Taken", value = formatDate(image.dateTaken), tint = Primary, small = compact)
-                    MetaRow(icon = Icons.Outlined.Edit, label = "Modified", value = formatDate(image.dateModified), tint = if (image.hasMismatch) Danger else OnSurface2, small = compact)
+                    MetaRow(icon = Icons.Outlined.DateRange, label = "Taken",    value = formatDate(image.dateTaken),    tint = Primary,                                       small = compact)
+                    MetaRow(icon = Icons.Outlined.Edit,      label = "Modified", value = formatDate(image.dateModified), tint = if (image.hasMismatch) Danger else OnSurface2, small = compact)
                 } else {
                     Text(formatDateShort(image.dateTaken), color = OnSurface2, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -880,14 +854,144 @@ private fun PhotoCard(
     }
 }
 
+// ─── Remaining composables ────────────────────────────────────────────────────
+
 @Composable
-private fun MetaRow(
-    icon:  androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    value: String,
-    tint:  Color,
-    small: Boolean = false
-) {
+private fun MediaTypeRow(selected: MediaType, onSelect: (MediaType) -> Unit, counts: Map<MediaType, Int>) {
+    Surface(color = Surface1) {
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MediaType.entries.forEach { type ->
+                val active = type == selected
+                val count  = counts[type] ?: 0
+                Surface(
+                    shape    = RoundedCornerShape(8.dp),
+                    color    = if (active) Primary.copy(alpha = 0.15f) else Surface2,
+                    modifier = Modifier.weight(1f).clickable { onSelect(type) }
+                ) {
+                    Column(modifier = Modifier.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(type.label, color = if (active) Primary else OnSurface2, fontSize = 13.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
+                        Text(count.toString(), color = if (active) Primary.copy(alpha = 0.8f) else OnSurface2.copy(alpha = 0.6f), fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+        }
+    }
+    HorizontalDivider(color = Divider, thickness = 1.dp)
+}
+
+@Composable
+private fun AppBar(imageCount: Int, mismatchCount: Int, gridMode: GridMode, onGridMode: (GridMode) -> Unit, threshold: MismatchThreshold, onOpenThreshold: () -> Unit) {
+    Surface(color = Surface1, tonalElevation = 0.dp) {
+        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text("EXIF Inspector", color = OnSurface, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    if (imageCount > 0) {
+                        Spacer(Modifier.height(2.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("$imageCount items", color = OnSurface2, fontSize = 13.sp)
+                            if (mismatchCount > 0) {
+                                Text("·", color = OnSurface2, fontSize = 13.sp)
+                                Text("$mismatchCount need attention", color = Danger, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    GridToggle(current = gridMode, onSelect = onGridMode)
+                    IconButton(onClick = onOpenThreshold, modifier = Modifier.size(36.dp).background(Surface1, RoundedCornerShape(10.dp))) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = OnSurface2, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+    }
+    HorizontalDivider(color = Divider, thickness = 1.dp)
+}
+
+@Composable
+private fun GridToggle(current: GridMode, onSelect: (GridMode) -> Unit) {
+    Surface(shape = RoundedCornerShape(10.dp), color = Surface2) {
+        Row(modifier = Modifier.padding(3.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            listOf(GridMode.ONE to "▬", GridMode.TWO to "⊞", GridMode.THREE to "⊟").forEach { (mode, icon) ->
+                val active = mode == current
+                Box(
+                    modifier         = Modifier.background(if (active) Primary.copy(alpha = 0.15f) else Color.Transparent, RoundedCornerShape(7.dp)).clickable { onSelect(mode) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(icon, fontSize = 14.sp, color = if (active) Primary else OnSurface2, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectionBar(selectedCount: Int, totalCount: Int, onClear: () -> Unit, onSelectAll: () -> Unit, onAction: () -> Unit) {
+    val allSelected = selectedCount == totalCount
+    Surface(color = PrimaryDim) {
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                IconButton(onClick = onClear, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Filled.Close, contentDescription = "Clear", tint = OnSurface, modifier = Modifier.size(18.dp))
+                }
+                Text("$selectedCount selected", color = OnSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                TextButton(onClick = onSelectAll, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+                    Text(if (allSelected) "Deselect all" else "Select all", color = Primary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+            Button(onClick = onAction, colors = ButtonDefaults.buttonColors(containerColor = Primary, contentColor = Color.White), shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("Change Date", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FilterTabs(selected: Filter, onSelect: (Filter) -> Unit, counts: Map<Filter, Int>) {
+    Surface(color = Surface1) {
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Filter.entries.forEach { filter ->
+                val active    = filter == selected
+                val count     = counts[filter] ?: 0
+                val bgColor   = when { active && filter == Filter.MISMATCH -> Danger.copy(alpha = 0.15f); active -> Primary.copy(alpha = 0.12f); else -> Surface2 }
+                val textColor = when { active && filter == Filter.MISMATCH -> Danger; active -> Primary; else -> OnSurface2 }
+                Surface(shape = RoundedCornerShape(20.dp), color = bgColor, modifier = Modifier.clickable { onSelect(filter) }) {
+                    Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(filter.label, color = textColor, fontSize = 13.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
+                        if (count > 0) {
+                            Surface(shape = CircleShape, color = textColor.copy(alpha = 0.15f)) {
+                                Text(count.toString(), color = textColor, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    HorizontalDivider(color = Divider, thickness = 1.dp)
+}
+
+@Composable
+private fun ProgressBanner(text: String?, value: Float?, current: Int, total: Int) {
+    Surface(color = SuccessDim) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(text ?: "Working…", color = Success, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                if (total > 0 && current > 0) Text("$current / $total", color = Success.copy(alpha = 0.7f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            }
+            Spacer(Modifier.height(8.dp))
+            if (value != null) {
+                LinearProgressIndicator(progress = value, modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)), color = Success, trackColor = Success.copy(alpha = 0.2f))
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)), color = Success, trackColor = Success.copy(alpha = 0.2f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetaRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String, tint: Color, small: Boolean = false) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(if (small) 13.dp else 15.dp))
         Text(label, color = OnSurface2, fontSize = if (small) 11.sp else 12.sp, modifier = Modifier.width(if (small) 46.dp else 58.dp))
@@ -898,18 +1002,12 @@ private fun MetaRow(
 @Composable
 private fun MismatchBanner(compact: Boolean, threshold: MismatchThreshold) {
     Surface(shape = RoundedCornerShape(8.dp), color = Danger.copy(alpha = 0.08f)) {
-        Row(
-            modifier              = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment     = Alignment.Top
-        ) {
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
             Icon(Icons.Filled.Warning, contentDescription = null, tint = Danger, modifier = Modifier.size(14.dp).padding(top = 1.dp))
             Text(
                 text       = if (compact) "Date mismatch detected"
                 else "Timestamps differ by more than ${threshold.label}. The file may have been copied or edited, or the parsed date is unrealistic.",
-                color      = Danger,
-                fontSize   = 12.sp,
-                lineHeight = 17.sp
+                color      = Danger, fontSize = 12.sp, lineHeight = 17.sp
             )
         }
     }
@@ -919,68 +1017,39 @@ private fun MismatchBanner(compact: Boolean, threshold: MismatchThreshold) {
 private fun EmptyState(modifier: Modifier = Modifier, filter: Filter, mediaType: MediaType) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text     = when { filter == Filter.MISMATCH -> "✓"; mediaType == MediaType.VIDEOS -> "🎬"; else -> "📷" },
-                fontSize = 40.sp
-            )
+            Text(text = when { filter == Filter.MISMATCH -> "✓"; mediaType == MediaType.VIDEOS -> "🎬"; else -> "📷" }, fontSize = 40.sp)
             Text(
                 text       = when {
-                    filter == Filter.MISMATCH                    -> "No date issues found"
-                    filter == Filter.OK                          -> "No clean items in this view"
-                    mediaType == MediaType.VIDEOS                -> "No videos found"
-                    mediaType == MediaType.PHOTOS                -> "No photos found"
-                    else                                         -> "No media found"
+                    filter == Filter.MISMATCH     -> "No date issues found"
+                    filter == Filter.OK           -> "No clean items in this view"
+                    mediaType == MediaType.VIDEOS -> "No videos found"
+                    mediaType == MediaType.PHOTOS -> "No photos found"
+                    else                          -> "No media found"
                 },
-                color      = OnSurface,
-                fontSize   = 16.sp,
-                fontWeight = FontWeight.Medium
+                color = OnSurface, fontSize = 16.sp, fontWeight = FontWeight.Medium
             )
-            Text(
-                text    = when (filter) {
-                    Filter.MISMATCH -> "All your media has consistent dates"
-                    else            -> "Try a different filter"
-                },
-                color   = OnSurface2,
-                fontSize = 13.sp
-            )
+            Text(text = when (filter) { Filter.MISMATCH -> "All your media has consistent dates"; else -> "Try a different filter" }, color = OnSurface2, fontSize = 13.sp)
         }
     }
 }
 
 @Composable
-private fun DateActionDialog(
-    isSingleItem: Boolean,
-    exifDate:     Long?,
-    onUseExif:    () -> Unit,
-    onPickCustom: () -> Unit,
-    onDismiss:    () -> Unit
-) {
+private fun DateActionDialog(isSingleItem: Boolean, exifDate: Long?, onUseExif: () -> Unit, onPickCustom: () -> Unit, onDismiss: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(modifier = Modifier.fillMaxWidth(0.9f).wrapContentHeight(), shape = RoundedCornerShape(16.dp), color = Surface2, tonalElevation = 8.dp) {
             Column(modifier = Modifier.padding(24.dp)) {
                 Text("Set date", color = OnSurface, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text       = if (isSingleItem) "How would you like to update this File's modified date?"
-                    else "How would you like to update the modified dates for these Files?",
-                    color      = OnSurface2,
-                    fontSize   = 13.sp,
-                    lineHeight = 19.sp
+                    text  = if (isSingleItem) "How would you like to update this File's modified date?" else "How would you like to update the modified dates for these Files?",
+                    color = OnSurface2, fontSize = 13.sp, lineHeight = 19.sp
                 )
                 Spacer(Modifier.height(20.dp))
-                ActionOption(
-                    title    = "Use original EXIF date",
-                    subtitle = if (exifDate != null) formatDate(exifDate) else "Restore each photo's capture date",
-                    color    = Primary,
-                    onClick  = onUseExif
-                )
-                Spacer(Modifier.height(10.dp))
+                ActionOption(title = "Use original EXIF date", subtitle = if (exifDate != null) formatDate(exifDate) else "Restore each photo's capture date", color = Primary, onClick = onUseExif)
                 Spacer(Modifier.height(10.dp))
                 ActionOption(title = "Pick a custom date", subtitle = "Choose any date and time", color = Warn, onClick = onPickCustom)
                 Spacer(Modifier.height(16.dp))
-                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
-                    Text("Cancel", color = OnSurface2)
-                }
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Cancel", color = OnSurface2) }
             }
         }
     }
@@ -988,18 +1057,8 @@ private fun DateActionDialog(
 
 @Composable
 private fun ActionOption(title: String, subtitle: String, color: Color, onClick: () -> Unit) {
-    Surface(
-        shape    = RoundedCornerShape(10.dp),
-        color    = color.copy(alpha = 0.07f),
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
-    ) {
-        Row(
-            modifier              = Modifier
-                .border(1.dp, color.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment     = Alignment.CenterVertically
-        ) {
+    Surface(shape = RoundedCornerShape(10.dp), color = color.copy(alpha = 0.07f), modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        Row(modifier = Modifier.border(1.dp, color.copy(alpha = 0.2f), RoundedCornerShape(10.dp)).padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(modifier = Modifier.size(6.dp).background(color, CircleShape))
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(title, color = color, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -1010,31 +1069,17 @@ private fun ActionOption(title: String, subtitle: String, color: Color, onClick:
 }
 
 @Composable
-private fun DateTimePickerDialog(
-    context:       Context,
-    initialMillis: Long?,
-    onConfirm:     (Long) -> Unit,
-    onDismiss:     () -> Unit
-) {
+private fun DateTimePickerDialog(context: Context, initialMillis: Long?, onConfirm: (Long) -> Unit, onDismiss: () -> Unit) {
     val safeMillis = remember(initialMillis) {
         val minMillis = Calendar.getInstance().apply { set(1900, 0, 1) }.timeInMillis
         val maxMillis = Calendar.getInstance().apply { set(2100, 11, 31) }.timeInMillis
-        if (initialMillis != null && initialMillis > 0 && initialMillis in minMillis..maxMillis)
-            initialMillis
-        else
-            System.currentTimeMillis()
+        if (initialMillis != null && initialMillis > 0 && initialMillis in minMillis..maxMillis) initialMillis
+        else System.currentTimeMillis()
     }
-
-    val initCal = remember {
-        Calendar.getInstance().apply { timeInMillis = safeMillis }
-    }
+    val initCal         = remember { Calendar.getInstance().apply { timeInMillis = safeMillis } }
     val datePickerState = rememberDatePickerState(initialSelectedDateMillis = safeMillis)
-    val timePickerState = rememberTimePickerState(
-        initialHour   = initCal.get(Calendar.HOUR_OF_DAY),
-        initialMinute = initCal.get(Calendar.MINUTE),
-        is24Hour      = true
-    )
-    var showTimePicker by remember { mutableStateOf(false) }
+    val timePickerState = rememberTimePickerState(initialHour = initCal.get(Calendar.HOUR_OF_DAY), initialMinute = initCal.get(Calendar.MINUTE), is24Hour = true)
+    var showTimePicker  by remember { mutableStateOf(false) }
 
     Dialog(
         onDismissRequest = if (showTimePicker) ({ showTimePicker = false }) else onDismiss,
@@ -1047,41 +1092,24 @@ private fun DateTimePickerDialog(
                     DatePicker(
                         state  = datePickerState,
                         colors = DatePickerDefaults.colors(
-                            containerColor                    = Surface2,
-                            titleContentColor                 = OnSurface2,
-                            headlineContentColor              = OnSurface,
-                            weekdayContentColor               = OnSurface2,
-                            subheadContentColor               = OnSurface2,
-                            navigationContentColor            = OnSurface,
-                            yearContentColor                  = OnSurface,
-                            currentYearContentColor           = Primary,
-                            selectedYearContentColor          = Color.White,
-                            selectedYearContainerColor        = Primary,
-                            dayContentColor                   = OnSurface,
-                            selectedDayContentColor           = Color.White,
-                            selectedDayContainerColor         = Primary,
-                            todayContentColor                 = Primary,
-                            todayDateBorderColor              = Primary,
-                            dayInSelectionRangeContentColor   = OnSurface,
-                            dayInSelectionRangeContainerColor = Primary.copy(alpha = 0.2f)
+                            containerColor = Surface2, titleContentColor = OnSurface2, headlineContentColor = OnSurface,
+                            weekdayContentColor = OnSurface2, subheadContentColor = OnSurface2, navigationContentColor = OnSurface,
+                            yearContentColor = OnSurface, currentYearContentColor = Primary, selectedYearContentColor = Color.White,
+                            selectedYearContainerColor = Primary, dayContentColor = OnSurface, selectedDayContentColor = Color.White,
+                            selectedDayContainerColor = Primary, todayContentColor = Primary, todayDateBorderColor = Primary,
+                            dayInSelectionRangeContentColor = OnSurface, dayInSelectionRangeContainerColor = Primary.copy(alpha = 0.2f)
                         )
                     )
                     Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                         TextButton(onClick = onDismiss) { Text("Cancel", color = OnSurface2) }
                         Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = { if (datePickerState.selectedDateMillis != null) showTimePicker = true },
-                            enabled = datePickerState.selectedDateMillis != null,
-                            colors  = ButtonDefaults.buttonColors(containerColor = Primary),
-                            shape   = RoundedCornerShape(8.dp)
-                        ) {
+                        Button(onClick = { if (datePickerState.selectedDateMillis != null) showTimePicker = true }, enabled = datePickerState.selectedDateMillis != null, colors = ButtonDefaults.buttonColors(containerColor = Primary), shape = RoundedCornerShape(8.dp)) {
                             Text("Next", fontWeight = FontWeight.SemiBold)
                         }
                     }
                 } else {
-                    val selectedDateMillis = datePickerState.selectedDateMillis ?: 0L
                     val previewCal = Calendar.getInstance().apply {
-                        timeInMillis = selectedDateMillis
+                        timeInMillis = datePickerState.selectedDateMillis ?: 0L
                         set(Calendar.HOUR_OF_DAY, timePickerState.hour)
                         set(Calendar.MINUTE, timePickerState.minute)
                         set(Calendar.SECOND, 0)
@@ -1093,27 +1121,17 @@ private fun DateTimePickerDialog(
                         TimePicker(
                             state  = timePickerState,
                             colors = TimePickerDefaults.colors(
-                                clockDialColor                       = Surface1,
-                                clockDialSelectedContentColor        = Color.White,
-                                clockDialUnselectedContentColor      = OnSurface2,
-                                selectorColor                        = Primary,
-                                containerColor                       = Surface2,
-                                periodSelectorBorderColor            = Divider,
-                                timeSelectorSelectedContainerColor   = Primary.copy(alpha = 0.2f),
-                                timeSelectorUnselectedContainerColor = Surface1,
-                                timeSelectorSelectedContentColor     = Primary,
-                                timeSelectorUnselectedContentColor   = OnSurface2
+                                clockDialColor = Surface1, clockDialSelectedContentColor = Color.White, clockDialUnselectedContentColor = OnSurface2,
+                                selectorColor = Primary, containerColor = Surface2, periodSelectorBorderColor = Divider,
+                                timeSelectorSelectedContainerColor = Primary.copy(alpha = 0.2f), timeSelectorUnselectedContainerColor = Surface1,
+                                timeSelectorSelectedContentColor = Primary, timeSelectorUnselectedContentColor = OnSurface2
                             )
                         )
                     }
                     Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                         TextButton(onClick = { showTimePicker = false }) { Text("Back", color = OnSurface2) }
                         Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = { onConfirm(previewCal.timeInMillis) },
-                            colors  = ButtonDefaults.buttonColors(containerColor = Success),
-                            shape   = RoundedCornerShape(8.dp)
-                        ) {
+                        Button(onClick = { onConfirm(previewCal.timeInMillis) }, colors = ButtonDefaults.buttonColors(containerColor = Success), shape = RoundedCornerShape(8.dp)) {
                             Text("Apply", color = Color.Black, fontWeight = FontWeight.SemiBold)
                         }
                     }
@@ -1150,21 +1168,14 @@ private fun ThresholdRow(option: MismatchThreshold, selected: Boolean, onSelect:
     Surface(
         shape    = RoundedCornerShape(10.dp),
         color    = if (selected) Primary.copy(alpha = 0.08f) else Surface1,
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, if (selected) Primary.copy(alpha = 0.4f) else Divider, RoundedCornerShape(10.dp))
-            .clickable(onClick = onSelect)
+        modifier = Modifier.fillMaxWidth().border(1.dp, if (selected) Primary.copy(alpha = 0.4f) else Divider, RoundedCornerShape(10.dp)).clickable(onClick = onSelect)
     ) {
         Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(option.label, color = if (selected) Primary else OnSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 Text(option.description, color = OnSurface2, fontSize = 12.sp)
             }
-            RadioButton(
-                selected = selected,
-                onClick  = onSelect,
-                colors   = RadioButtonDefaults.colors(selectedColor = Primary, unselectedColor = Divider)
-            )
+            RadioButton(selected = selected, onClick = onSelect, colors = RadioButtonDefaults.colors(selectedColor = Primary, unselectedColor = Divider))
         }
     }
 }

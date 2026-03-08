@@ -100,37 +100,55 @@ class MediaScanner(private val context: Context) {
         return list
     }
     private fun parseDateFromFilename(name: String): Long? {
-        val patterns = listOf(Regex("(\\d{8})_(\\d{6})"), Regex("(\\d{14})"), Regex("(\\d{8})"))
+
+        val patterns = listOf(
+            Regex("(\\d{8})_(\\d{6})"),
+            Regex("(\\d{14})"),
+            Regex("(\\d{8})")
+        )
+
+        val calendar = Calendar.getInstance()
+
+        val startLimit = Calendar.getInstance().apply {
+            set(1990, Calendar.JANUARY, 1, 0, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
+        val tomorrowLimit = Calendar.getInstance().apply {
+            add(Calendar.DAY_OF_YEAR, 1)
+        }.timeInMillis
+
         for (pattern in patterns) {
+
             val value = pattern.find(name)?.value ?: continue
+
             val parsed = try {
+
                 val sdf = when (value.length) {
-                    15   -> SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
-                    14   -> SimpleDateFormat("yyyyMMddHHmmss",  Locale.getDefault())
-                    8    -> SimpleDateFormat("yyyyMMdd",        Locale.getDefault())
+                    15 -> SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+                    14 -> SimpleDateFormat("yyyyMMddHHmmss", Locale.getDefault())
+                    8  -> SimpleDateFormat("yyyyMMdd", Locale.getDefault())
                     else -> null
                 } ?: continue
-                sdf.isLenient = false  // reject impossible dates like month 13, day 99, hour 25, etc.
+
+                sdf.isLenient = false
+
                 sdf.parse(value)?.time
-            } catch (e: Exception) { null }
+
+            } catch (e: Exception) {
+                null
+            }
 
             if (parsed != null) {
-                val cal  = Calendar.getInstance().apply { timeInMillis = parsed }
-                val year = cal.get(Calendar.YEAR)
-                val mon  = cal.get(Calendar.MONTH) + 1   // 1–12
-                val day  = cal.get(Calendar.DAY_OF_MONTH) // 1–31
-                val hour = cal.get(Calendar.HOUR_OF_DAY)  // 0–23
-                val min  = cal.get(Calendar.MINUTE)        // 0–59
 
-                val isValid = year in 1990..2100
-                        && mon  in 1..12
-                        && day  in 1..31
-                        && hour in 0..23
-                        && min  in 0..59
+                val isRealistic = parsed in startLimit..tomorrowLimit
 
-                if (isValid) return parsed
+                if (isRealistic) {
+                    return parsed
+                }
             }
         }
+
         return null
     }
 }

@@ -13,6 +13,6 @@ sealed class MismatchThreshold(
 
     companion object {
         val all: List<MismatchThreshold> = listOf(Minutes, Hours, Days, Weeks, Months)
-        val default: MismatchThreshold   = Minutes
+        val default: MismatchThreshold   = Days
     }
 }

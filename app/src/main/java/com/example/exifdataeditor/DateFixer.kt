@@ -13,18 +13,27 @@ import java.io.File
 
 object DateFixer {
 
-    private const val TAG       = "DateFixer"
-    private const val CHUNK     = 8 * 1024
-    private const val MAX_BATCH = 50
+    private const val TAG = "DateFixer"
 
     fun fixOne(context: Context, item: MediaItem): FixResult {
         val takenMillis = item.dateTaken ?: return FixResult.Skipped
         if (takenMillis <= 0) return FixResult.Skipped
-        return applyFix(context, item, Uri.parse(item.uri), takenMillis)
+        val uri = Uri.parse(item.uri)
+        return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            fixViaFilePath(context, item, uri, takenMillis)
+        } else {
+            FixResult.NeedsGrant
+        }
     }
 
-    fun changeDate(context: Context, item: MediaItem, newDateMillis: Long): FixResult =
-        applyFix(context, item, Uri.parse(item.uri), newDateMillis)
+    fun changeDate(context: Context, item: MediaItem, newDateMillis: Long): FixResult {
+        val uri = Uri.parse(item.uri)
+        return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            fixViaFilePath(context, item, uri, newDateMillis)
+        } else {
+            FixResult.NeedsGrant
+        }
+    }
 
     fun fixAll(
         context:  Context,
@@ -38,9 +47,11 @@ object DateFixer {
         var skipped    = 0
         val needsGrant = mutableListOf<Uri>()
         val total      = items.size
+        var index      = 0
 
-        items.forEachIndexed { idx, item ->
-            progress(FixProgress.Processing(idx + 1, total))
+        for (item in items) {
+            index++
+            progress(FixProgress.Processing(index, total))
 
             val result = if (newDate != null) changeDate(context, item, newDate)
             else                 fixOne(context, item)
@@ -54,38 +65,76 @@ object DateFixer {
         }
 
         if (needsGrant.isNotEmpty()) progress(FixProgress.RequestingPermission)
+
         return BatchResult(fixed, skipped, needsGrant)
     }
-
     fun fixAllWithGrant(
         context:  Context,
         items:    List<MediaItem>,
         newDate:  Long?,
         progress: (FixProgress) -> Unit
     ): Int {
-        var fixed         = 0
-        val pathsToRescan = mutableListOf<String>()
+        var fixed    = 0
+        val resolver = context.contentResolver
+        val total    = items.size
+        var index    = 0
 
-        items.forEachIndexed { idx, item ->
-            progress(FixProgress.Processing(idx + 1, items.size))
+        for (item in items) {
+            index++
+            progress(FixProgress.Processing(index, total))
 
             val targetMillis: Long = when {
                 newDate != null && newDate > 0               -> newDate
                 item.dateTaken != null && item.dateTaken > 0 -> item.dateTaken
-                else                                          -> return@forEachIndexed
+                else                                          -> continue
             }
 
             val uri = Uri.parse(item.uri)
 
             try {
-                val path: String? = if (item.isVideo) {
-                    fixVideoMetadata(context, uri, item, targetMillis)
-                } else {
-                    fixImageStreaming(context, uri, item, targetMillis)
-                }
+                if (item.isVideo) {
 
-                if (path != null) {
-                    pathsToRescan.add(path)
+                    val values = buildContentValues(item.isVideo, targetMillis)
+                    resolver.update(uri, values, null, null)
+
+                    val path = resolver.query(uri, arrayOf(MediaStore.Video.Media.DATA), null, null, null)
+                        ?.use { cursor ->
+                            if (cursor.moveToFirst())
+                                cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATA))
+                            else null
+                        }
+
+                    if (path != null) {
+                        File(path).setLastModified(targetMillis)
+                        MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
+                    }
+
+                    fixed++
+                } else {
+                    val input  = resolver.openInputStream(uri) ?: continue
+                    val bytes  = input.readBytes()
+                    input.close()
+
+                    val output = resolver.openOutputStream(uri, "rwt") ?: continue
+                    output.write(bytes)
+                    output.flush()
+                    output.close()
+
+                    val values = buildContentValues(item.isVideo, targetMillis)
+                    resolver.update(uri, values, null, null)
+
+                    val path = resolver.query(uri, arrayOf(MediaStore.Images.Media.DATA), null, null, null)
+                        ?.use { cursor ->
+                            if (cursor.moveToFirst())
+                                cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA))
+                            else null
+                        }
+
+                    if (path != null) {
+                        File(path).setLastModified(targetMillis)
+                        MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
+                    }
+
                     fixed++
                 }
             } catch (e: Exception) {
@@ -94,13 +143,8 @@ object DateFixer {
         }
 
         progress(FixProgress.Rescanning)
-        pathsToRescan.chunked(MAX_BATCH).forEach { batch ->
-            MediaScannerConnection.scanFile(context, batch.toTypedArray(), null, null)
-        }
-
         return fixed
     }
-
     fun requestWriteGrant(
         context:  Context,
         uris:     List<Uri>,
@@ -111,94 +155,42 @@ object DateFixer {
         launcher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
     }
 
-    private fun applyFix(
-        context:      Context,
-        item:         MediaItem,
-        uri:          Uri,
-        targetMillis: Long
-    ): FixResult = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-        fixViaFilePath(context, item, uri, targetMillis)
-    } else {
-        FixResult.NeedsGrant
-    }
-
-    private fun fixVideoMetadata(
-        context:      Context,
-        uri:          Uri,
-        item:         MediaItem,
-        targetMillis: Long
-    ): String? {
-        context.contentResolver.update(uri, buildContentValues(targetMillis), null, null)
-        val path = queryPath(context, uri, MediaStore.Video.Media.DATA) ?: return null
-        File(path).setLastModified(targetMillis)
-        return path
-    }
-
-    private fun fixImageStreaming(
-        context:      Context,
-        uri:          Uri,
-        item:         MediaItem,
-        targetMillis: Long
-    ): String? {
-        val resolver = context.contentResolver
-        val bytes    = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
-
-        resolver.openOutputStream(uri, "rwt")?.use { out ->
-            var offset = 0
-            while (offset < bytes.size) {
-                val len = minOf(CHUNK, bytes.size - offset)
-                out.write(bytes, offset, len)
-                offset += len
-            }
-            out.flush()
-        } ?: return null
-
-        resolver.update(uri, buildContentValues(targetMillis), null, null)
-
-        val path = queryPath(context, uri, MediaStore.Images.Media.DATA) ?: return null
-        File(path).setLastModified(targetMillis)
-        return path
-    }
-
-    private fun queryPath(context: Context, uri: Uri, dataCol: String): String? =
-        context.contentResolver.query(uri, arrayOf(dataCol), null, null, null)
-            ?.use { cursor ->
-                if (cursor.moveToFirst())
-                    cursor.getString(cursor.getColumnIndexOrThrow(dataCol))
-                else null
-            }
-
     @Suppress("DEPRECATION")
-    private fun fixViaFilePath(
-        context:      Context,
-        item:         MediaItem,
-        uri:          Uri,
-        targetMillis: Long
-    ): FixResult {
+    private fun fixViaFilePath(context: Context, item: MediaItem, uri: Uri, targetMillis: Long): FixResult {
         return try {
             val dataCol = if (item.isVideo) MediaStore.Video.Media.DATA
             else              MediaStore.Images.Media.DATA
 
-            val path = queryPath(context, uri, dataCol)
-                ?: return FixResult.Failed("Path null")
+            val path = context.contentResolver.query(uri, arrayOf(dataCol), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst())
+                        cursor.getString(cursor.getColumnIndexOrThrow(dataCol))
+                    else null
+                } ?: return FixResult.Failed("Path null")
 
             val file = File(path)
             if (!file.exists()) return FixResult.Failed("File missing")
 
-            val ok = file.setLastModified(targetMillis)
-            context.contentResolver.update(uri, buildContentValues(targetMillis), null, null)
+            val ok     = file.setLastModified(targetMillis)
+            val values = buildContentValues(item.isVideo, targetMillis)
+            context.contentResolver.update(uri, values, null, null)
             MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
 
-            if (ok) FixResult.Success else FixResult.Failed("setLastModified returned false")
+            if (ok) FixResult.Success else FixResult.Failed("setLastModified false")
         } catch (e: Exception) {
             FixResult.Failed(e.message ?: "Unknown error")
         }
     }
 
-    private fun buildContentValues(targetMillis: Long): ContentValues =
+    private fun buildContentValues(isVideo: Boolean, targetMillis: Long): ContentValues =
         ContentValues().apply {
-            put(MediaStore.MediaColumns.DATE_MODIFIED, targetMillis / 1000L)
-            put(MediaStore.MediaColumns.DATE_TAKEN,    targetMillis)
+            if (isVideo) {
+                put(MediaStore.Video.Media.DATE_MODIFIED, targetMillis / 1000L)
+                put(MediaStore.Video.Media.DATE_TAKEN,    targetMillis)
+            } else {
+                put(MediaStore.Images.Media.DATE_MODIFIED, targetMillis / 1000L)
+                put(MediaStore.Images.Media.DATE_TAKEN,    targetMillis)
+            }
         }
 
     sealed class FixResult {
